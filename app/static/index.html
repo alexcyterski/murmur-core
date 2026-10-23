@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0a0b0d">
+  <meta name="color-scheme" content="dark light">
+  <title>Murmur</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#/" aria-label="Murmur home">
+        <span class="mark" aria-hidden="true"></span>
+        <span>MURMUR</span>
+      </a>
+      <nav class="nav">
+        <a href="#/" data-nav="dash">Nodes</a>
+        <a href="#/settings" data-nav="settings">Settings</a>
+      </nav>
+      <div class="link-state" id="link-state" title="Broker connection">
+        <i class="dot"></i><span>Connecting</span>
+      </div>
+    </div>
+  </header>
+
+  <main id="view" class="view" aria-live="polite"></main>
+
+  <div class="toast" id="toast" role="status"></div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

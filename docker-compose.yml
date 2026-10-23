@@ -1,0 +1,41 @@
+name: murmur-core
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: murmur-mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"            # nodes publish here
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - mosquitto-data:/mosquitto/data
+    healthcheck:
+      test: ["CMD", "mosquitto_sub", "-t", "$$SYS/#", "-C", "1", "-i", "healthcheck", "-W", "3"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  core:
+    build: .
+    image: murmur-core:latest
+    container_name: murmur-core
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+    ports:
+      - "8090:8090"            # dashboard
+    environment:
+      MQTT_HOST: mosquitto
+      MQTT_PORT: 1883
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
+      MQTT_BASE_TOPIC: murmur
+      MURMUR_DEMO: ${MURMUR_DEMO:-0}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - murmur-data:/data
+
+volumes:
+  mosquitto-data:
+  murmur-data:
