@@ -140,7 +140,7 @@ async def patch_node(node_id: str, patch: NodePatch):
         fields["name"] = fields["name"].strip() or node["name"]
     if "led" in fields:
         fields["led"] = 1 if fields["led"] else 0
-    db.update_node(node_id, **fields)
+    db.patch_node(node_id, **fields)
     pushed = None
     if {"name", "interval", "led"} & fields.keys():
         pushed = await hub.push_config(node_id)

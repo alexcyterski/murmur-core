@@ -50,6 +50,10 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS node_config (
+    node_id TEXT PRIMARY KEY,
+    desired TEXT NOT NULL
+);
 """
 
 DEFAULT_SETTINGS: dict = {
@@ -120,8 +124,34 @@ class Database:
 
     def delete_node(self, node_id: str) -> None:
         with self._lock:
+            self._conn.execute("DELETE FROM node_config WHERE node_id = ?", (node_id,))
             self._conn.execute("DELETE FROM readings WHERE node_id = ?", (node_id,))
             self._conn.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
+
+    def desired_config(self, node_id: str) -> dict:
+        row = self._one("SELECT desired FROM node_config WHERE node_id = ?", (node_id,))
+        return json.loads(row[0]) if row else {}
+
+    def patch_node(self, node_id: str, **fields) -> None:
+        """Save dashboard edits and their MQTT overrides together, before publishing."""
+        overrides = {k: v for k, v in fields.items() if k in ("name", "interval", "led")}
+        with self._lock:
+            self._conn.execute("BEGIN")
+            try:
+                if overrides:
+                    desired = {**self.desired_config(node_id), **overrides}
+                    if "led" in desired:
+                        desired["led"] = bool(desired["led"])
+                    self._conn.execute(
+                        "INSERT INTO node_config (node_id, desired) VALUES (?, ?) "
+                        "ON CONFLICT(node_id) DO UPDATE SET desired = excluded.desired",
+                        (node_id, json.dumps(desired)),
+                    )
+                self.update_node(node_id, **fields)
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
 
     # -- readings ---------------------------------------------------------
     def add_reading(self, node_id: str, ts: int, t, h, p) -> None:

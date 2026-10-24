@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 from typing import Awaitable, Callable
@@ -26,11 +27,14 @@ Publisher = Callable[[str, str, bool], Awaitable[None]]
 class Hub:
     def __init__(self, db: Database, base_topic: str):
         self.db = db
-        self.base = base_topic.strip("/")
+        self.base = base_topic.strip().strip("/")
+        if not self.base or any(c in self.base for c in ("+", "#", "\x00")):
+            raise ValueError("MQTT base topic must be nonempty and contain no wildcards or NUL")
         self.clients: set[WebSocket] = set()
         self.publisher: Publisher | None = None
         self.mqtt_connected = False
         self._online_cache: dict[str, bool] = {}
+        self._config_lock = asyncio.Lock()
 
     # -- views ------------------------------------------------------------
     def offline_threshold(self, node: dict, settings: dict) -> float:
@@ -102,15 +106,22 @@ class Hub:
 
     async def set_mqtt_state(self, connected: bool) -> None:
         self.mqtt_connected = connected
+        if connected:
+            # Also restores retained config if the broker lost its persistence.
+            for node in self.db.nodes():
+                await self.push_config(node["id"])
         await self.broadcast({"type": "meta", "meta": self.meta()})
 
     # -- MQTT ingest ------------------------------------------------------
     async def on_message(self, topic: str, payload: bytes) -> None:
-        parts = topic.split("/")
-        if len(parts) != 3 or parts[0] != self.base:
+        prefix = self.base + "/"
+        if not topic.startswith(prefix):
             return
-        _, node_id, kind = parts
-        if not NODE_ID_RE.match(node_id):
+        parts = topic[len(prefix):].split("/")
+        if len(parts) != 2:
+            return
+        node_id, kind = parts
+        if not NODE_ID_RE.fullmatch(node_id):
             return
         text = payload.decode("utf-8", "replace").strip()
         if kind == "status":
@@ -134,7 +145,7 @@ class Hub:
         node = self.db.node(node_id)
         if node is None:
             log.info("discovered node %s", node_id)
-            self.db.create_node(node_id, (name or node_id)[:48], now)
+            self.db.create_node(node_id, (_str(name) or node_id)[:48], now)
             node = self.db.node(node_id)
         return node
 
@@ -179,7 +190,7 @@ class Hub:
         await self.broadcast({"type": "reading", "node": v})
 
     async def handle_status(self, node_id: str, text: str) -> None:
-        if not text:  # retained status cleared
+        if text.lower() not in ("online", "offline"):
             return
         status = "online" if text.lower() == "online" else "offline"
         now = time.time()
@@ -191,7 +202,7 @@ class Hub:
 
     async def handle_info(self, node_id: str, data: dict) -> None:
         now = time.time()
-        node = self._ensure_node(node_id, data.get("name"), now)
+        self._ensure_node(node_id, data.get("name"), now)
         fields = {
             "sensor": _str(data.get("sensor")),
             "fw": _str(data.get("fw")),
@@ -199,15 +210,18 @@ class Hub:
             "mac": _str(data.get("mac")),
             "model": _str(data.get("model")),
         }
-        # Adopt the node's own name until a user renames it on the dashboard.
-        if node["name"] == node_id and _str(data.get("name")):
-            fields["name"] = _str(data["name"])[:48]
+        desired = self.db.desired_config(node_id)
+        # Only dashboard-edited fields are core-owned; the rest follow the node.
+        if isinstance(data.get("name"), str) and data["name"]:
+            fields["name"] = data["name"][:48]
         interval = _int(data.get("interval"))
-        if interval:
+        if interval is not None and INTERVAL_MIN <= interval <= INTERVAL_MAX:
             fields["interval"] = interval
-        if "led" in data:
+        if isinstance(data.get("led"), bool):
             fields["led"] = 1 if data["led"] else 0
-        self.db.update_node(node_id, **{k: v for k, v in fields.items() if v is not None})
+        self.db.update_node(node_id, **{k: v for k, v in fields.items() if v is not None and k not in desired})
+        if desired and any(data.get(k) != v for k, v in desired.items()):
+            await self.push_config(node_id)
         await self.broadcast_node(node_id)
 
     # -- outbound ---------------------------------------------------------
@@ -222,21 +236,21 @@ class Hub:
             return False
 
     async def push_config(self, node_id: str) -> bool:
-        node = self.db.node(node_id)
-        if not node:
-            return False
-        cfg = {"name": node["name"], "led": bool(node["led"])}
-        if node["interval"]:
-            cfg["interval"] = node["interval"]
-        return await self.publish(f"{self.base}/{node_id}/config", json.dumps(cfg), retain=True)
+        # Serialize sends and read inside the lock so an older edit cannot win.
+        async with self._config_lock:
+            cfg = self.db.desired_config(node_id)
+            if not cfg:
+                return False
+            return await self.publish(f"{self.base}/{node_id}/config", json.dumps(cfg), retain=True)
 
     async def command(self, node_id: str, action: str) -> bool:
         return await self.publish(f"{self.base}/{node_id}/cmd", json.dumps({"action": action}))
 
     async def forget(self, node_id: str) -> None:
-        for kind in ("config", "info", "status"):
-            await self.publish(f"{self.base}/{node_id}/{kind}", "", retain=True)
-        self.db.delete_node(node_id)
+        async with self._config_lock:
+            for kind in ("config", "info", "status"):
+                await self.publish(f"{self.base}/{node_id}/{kind}", "", retain=True)
+            self.db.delete_node(node_id)
         self._online_cache.pop(node_id, None)
         await self.broadcast({"type": "removed", "id": node_id})
 
@@ -273,7 +287,10 @@ def _num(v):
     if isinstance(v, bool):
         return None
     if isinstance(v, (int, float)):
-        return float(v) if v == v else None  # filter NaN
+        try:
+            return float(v) if math.isfinite(v) else None
+        except OverflowError:
+            return None
     if isinstance(v, str):
         try:
             return _num(float(v))
