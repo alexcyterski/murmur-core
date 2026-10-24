@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     model       TEXT,
     interval    INTEGER,
     led         INTEGER NOT NULL DEFAULT 1,
+    battery     INTEGER,
+    reported_interval INTEGER,
     rssi        INTEGER,
     uptime      INTEGER,
     status      TEXT NOT NULL DEFAULT 'unknown',
@@ -70,7 +72,7 @@ DEFAULT_SETTINGS: dict = {
 }
 
 NODE_COLUMNS = {
-    "name", "location", "sensor", "fw", "ip", "mac", "model", "interval", "led", "rssi",
+    "name", "location", "sensor", "fw", "ip", "mac", "model", "interval", "led", "battery", "reported_interval", "rssi",
     "uptime", "status", "error", "first_seen", "last_seen", "t_off", "h_off", "p_off",
     "t_min", "t_max", "h_min", "h_max", "last_t", "last_h", "last_p", "last_ts", "last_stored",
 }
@@ -87,6 +89,10 @@ class Database:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.executescript(SCHEMA)
+            columns = {r[1] for r in self._conn.execute("PRAGMA table_info(nodes)")}
+            for column in ("battery", "reported_interval"):
+                if column not in columns:
+                    self._conn.execute(f"ALTER TABLE nodes ADD COLUMN {column} INTEGER")
 
     # -- primitives -------------------------------------------------------
     def _all(self, sql: str, args=()) -> list[sqlite3.Row]:
@@ -134,14 +140,15 @@ class Database:
 
     def patch_node(self, node_id: str, **fields) -> None:
         """Save dashboard edits and their MQTT overrides together, before publishing."""
-        overrides = {k: v for k, v in fields.items() if k in ("name", "interval", "led")}
+        overrides = {k: v for k, v in fields.items() if k in ("name", "interval", "led", "battery")}
         with self._lock:
             self._conn.execute("BEGIN")
             try:
                 if overrides:
                     desired = {**self.desired_config(node_id), **overrides}
-                    if "led" in desired:
-                        desired["led"] = bool(desired["led"])
+                    for key in ("led", "battery"):
+                        if key in desired:
+                            desired[key] = bool(desired[key])
                     self._conn.execute(
                         "INSERT INTO node_config (node_id, desired) VALUES (?, ?) "
                         "ON CONFLICT(node_id) DO UPDATE SET desired = excluded.desired",

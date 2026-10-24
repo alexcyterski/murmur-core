@@ -69,6 +69,7 @@ class NodePatch(BaseModel):
     location: Optional[str] = Field(None, max_length=48)
     interval: Optional[int] = Field(None, ge=INTERVAL_MIN, le=INTERVAL_MAX)
     led: Optional[bool] = None
+    battery: Optional[bool] = None
     t_off: Optional[float] = Field(None, ge=-20, le=20)
     h_off: Optional[float] = Field(None, ge=-30, le=30)
     p_off: Optional[float] = Field(None, ge=-100, le=100)
@@ -133,16 +134,21 @@ def get_node(node_id: str):
 async def patch_node(node_id: str, patch: NodePatch):
     node = _node_or_404(node_id)
     fields = patch.model_dump(exclude_unset=True)
-    for k in ("name", "interval", "led", "t_off", "h_off", "p_off"):
+    for k in ("name", "interval", "led", "battery", "t_off", "h_off", "p_off"):
         if k in fields and fields[k] is None:
             fields.pop(k)  # these cannot be cleared, only changed
     if "name" in fields:
         fields["name"] = fields["name"].strip() or node["name"]
     if "led" in fields:
         fields["led"] = 1 if fields["led"] else 0
+    if "battery" in fields:
+        if node["battery"] is None:
+            raise HTTPException(400, "Update node firmware to enable battery mode")
+        if fields["battery"] != bool(node["battery"]) and "interval" not in fields:
+            fields["interval"] = max(node["interval"] or 30, 300) if fields["battery"] else 30
     db.patch_node(node_id, **fields)
     pushed = None
-    if {"name", "interval", "led"} & fields.keys():
+    if {"name", "interval", "led", "battery"} & fields.keys():
         pushed = await hub.push_config(node_id)
     await hub.broadcast_node(node_id)
     return {"node": hub.view(db.node(node_id)), "pushed": pushed}
@@ -157,7 +163,9 @@ async def delete_node(node_id: str):
 
 @app.post("/api/nodes/{node_id}/command")
 async def node_command(node_id: str, cmd: Command):
-    _node_or_404(node_id)
+    node = _node_or_404(node_id)
+    if node["status"] == "sleeping":
+        raise HTTPException(409, "Node is sleeping; press RESET to open a maintenance window")
     if not await hub.command(node_id, cmd.action):
         raise HTTPException(503, "MQTT broker is not connected")
     return {"ok": True}

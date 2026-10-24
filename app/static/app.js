@@ -245,6 +245,7 @@ function handle(msg) {
     case 'meta':
       state.meta = { ...state.meta, ...msg.meta };
       renderLink();
+      if (page.name === 'node') updateNodeLive();
       break;
   }
 }
@@ -293,7 +294,7 @@ function heroHtml(nodes) {
       <div class="caption">Average across ${live.length} reporting node${live.length === 1 ? '' : 's'}</div>
     </div>
     <div class="summary">
-      <div><div class="k">Online</div><div class="v">${nodes.filter((n) => n.online).length}<small>/ ${nodes.length}</small></div></div>
+      <div><div class="k">Healthy</div><div class="v">${nodes.filter((n) => n.online).length}<small>/ ${nodes.length}</small></div></div>
       <div><div class="k">Humidity</div><div class="v">${num(hAvg, 0)}<small>%</small></div></div>
       <div><div class="k">Spread</div><div class="v">${lo == null ? '—' : `${num(U.t(lo))}–${num(U.t(hi))}`}<small>°</small></div></div>
     </div>`;
@@ -314,7 +315,7 @@ function cardHtml(n) {
       </div>
       ${alerts.length
         ? `<span class="chip warn">${ICON.alert}${esc(alerts[0].text)}</span>`
-        : `<div class="seen"><i class="dot ${dot}"></i><span data-seen="${n.last_seen ?? ''}">${n.online ? ago(n.last_seen) : 'Offline'}</span></div>`}
+        : `<div class="seen"><i class="dot ${dot}"></i><span data-seen="${n.online && !n.sleeping ? n.last_seen ?? '' : ''}">${n.sleeping ? 'Sleeping' : n.online ? ago(n.last_seen) : 'Offline'}</span></div>`}
     </div>
     <div class="temp"><span>${num(U.t(n.last.t))}</span><span class="unit">${U.tUnit()}</span></div>
     <div class="metrics">
@@ -477,11 +478,15 @@ function nodeHtml(n) {
       <h3>Device</h3>
       <div class="slider">
         <div class="slider-head">
-          <div><div class="label">Report interval</div><div class="hint faint" style="font-size:12.5px">Pushed to the node over MQTT</div></div>
+          <div><div class="label">Report interval</div><div class="hint faint" id="iv-hint" style="font-size:12.5px">Pushed to the node over MQTT</div></div>
           <div class="val" id="iv-val"></div>
         </div>
         <input type="range" id="iv" min="0" max="${INTERVALS.length - 1}" step="1">
         <div class="ticks"><span>2s</span><span>30s</span><span>5m</span><span>1h</span></div>
+      </div>
+      <div class="row" style="margin-top:18px;border-top:1px solid var(--line);padding-top:14px">
+        <div><div class="label">Battery mode</div><div class="hint" id="battery-hint"></div></div>
+        <label class="switch"><input type="checkbox" id="battery" aria-label="Battery mode"><span></span></label>
       </div>
       <div class="row" style="margin-top:18px;border-top:1px solid var(--line);padding-top:14px">
         <div><div class="label">Status LED</div><div class="hint">Blink on every report</div></div>
@@ -577,7 +582,7 @@ function updateNodeLive() {
 
   $('#n-name').textContent = n.name;
   $('#n-sub').innerHTML = `
-    <i class="dot ${n.online ? 'on' : 'off'}"></i><span>${n.online ? 'Online' : 'Offline'}</span>
+    <i class="dot ${n.online ? 'on' : 'off'}"></i><span>${n.sleeping ? 'Sleeping' : n.online ? 'Online' : 'Offline'}</span>
     ${n.location ? `<span class="sep">·</span><span>${esc(n.location)}</span>` : ''}
     <span class="sep">·</span><span>Updated <span id="n-seen">${ago(n.last_seen)}</span></span>
     ${n.error ? `<span class="chip crit">${ICON.alert}Sensor: ${esc(n.error)}</span>` : ''}
@@ -622,12 +627,25 @@ function updateNodeLive() {
 
   // device controls
   const iv = $('#iv');
-  if (iv && document.activeElement !== iv) {
+  // Preserve an active drag, but don't let lingering focus hide saved changes.
+  if (iv && !iv.matches(':active')) {
     const idx = INTERVALS.indexOf(n.interval);
     iv.value = idx >= 0 ? idx : INTERVALS.findIndex((x) => x >= (n.interval || 30));
     setIntervalLabel();
   }
   $('#led').checked = n.led;
+  $('#battery').checked = !!n.battery;
+  $('#battery').disabled = n.battery == null;
+  $('#battery-hint').textContent = n.battery == null
+    ? 'Update node firmware to enable battery mode'
+    : 'Deep sleep between reports. RESET opens a 5-minute window for commands and OTA.';
+  $('#iv-hint').textContent = n.battery
+    ? 'Sleep duration; 5–15 minutes recommended. Changes apply at the next wake.'
+    : 'Pushed to the node over MQTT';
+  $$('[data-cmd]').forEach((b) => {
+    b.disabled = n.sleeping || !n.online || !state.meta.mqtt;
+    b.title = n.sleeping ? 'Press RESET on the node to open a maintenance window' : '';
+  });
   $('#kv').innerHTML = [
     ['Sensor', sensorLabel(n.sensor)],
     ['Firmware', n.fw ? `v${n.fw}` : '—'],
@@ -672,7 +690,9 @@ async function patchNode(body, okMsg) {
   try {
     const res = await api(`/api/nodes/${encodeURIComponent(id)}`, { method: 'PATCH', body });
     state.nodes.set(id, res.node);
-    toast(res.pushed === false ? `${okMsg} — node will sync when the broker is back` : okMsg);
+    if (state.page.name === 'node' && state.page.id === id) updateNodeLive();
+    toast(res.pushed === false ? `${okMsg} — node will sync when the broker is back`
+      : res.pushed && res.node.sleeping ? `${okMsg} — applies at the next wake` : okMsg);
     return res.node;
   } catch (e) {
     toast(e.message, true);
@@ -692,7 +712,9 @@ function bindNode() {
       await api(`/api/nodes/${enc}/command`, { method: 'POST', body: { action } });
       toast({ identify: 'Blinking LED for 10 seconds', read: 'Reading requested', reboot: 'Reboot sent' }[action]);
     } catch (e) { toast(e.message, true); }
-    setTimeout(() => (b.disabled = false), 1200);
+    setTimeout(() => {
+      if (state.page.name === 'node' && state.page.id === id) updateNodeLive();
+    }, 1200);
   }));
 
   $('#metric-seg').addEventListener('click', (e) => {
@@ -720,6 +742,11 @@ function bindNode() {
   });
 
   $('#led').addEventListener('change', (e) => patchNode({ led: e.target.checked }, e.target.checked ? 'Status LED on' : 'Status LED off'));
+  $('#battery').addEventListener('change', async (e) => {
+    const battery = e.target.checked;
+    await patchNode({ battery }, battery ? 'Battery mode saved' : 'Always-on mode saved');
+    if (state.page.name === 'node' && state.page.id === id) updateNodeLive();
+  });
 
   const form = $('#cfg');
   form.addEventListener('reset', (e) => { e.preventDefault(); fillConfigForm(state.nodes.get(id)); });

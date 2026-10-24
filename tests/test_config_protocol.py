@@ -194,6 +194,103 @@ class ConfigProtocolTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(self.sent[-1], ("home/murmur/test/cmd", {"action": action}, False))
 
+    async def test_battery_enable_defaults_to_five_minutes_and_survives_stale_info(self):
+        await self.info(battery=False, interval=30)
+        result = await self.edit(battery=True)
+        self.assertTrue(result["node"]["battery"])
+        self.assertEqual(result["node"]["interval"], 300)
+        self.assertFalse(result["pushed"])
+        await self.info(battery=False, interval=30)
+        self.hub.publisher = self.publish
+        await self.hub.set_mqtt_state(True)
+        self.assertEqual(self.sent[-1][1], {"battery": True, "interval": 300})
+        self.sent.clear()
+        await self.info(battery=True, interval=300)
+        self.assertEqual(self.sent, [])
+        self.assertTrue(self.db.node("test")["battery"])
+
+    async def test_battery_enable_preserves_explicit_or_longer_interval(self):
+        await self.info(battery=False, interval=900)
+        result = await self.edit(battery=True)
+        self.assertEqual(result["node"]["interval"], 900)
+        await self.edit(battery=False)
+        result = await self.edit(battery=True, interval=600)
+        self.assertEqual(result["node"]["interval"], 600)
+
+    async def test_battery_disable_resets_interval_and_persists_override(self):
+        await self.info(battery=True, interval=900)
+        result = await self.edit(battery=False)
+        self.assertFalse(result["node"]["battery"])
+        self.assertEqual(result["node"]["interval"], 30)
+        await self.info(battery=True, interval=900)
+        self.assertEqual(self.db.node("test")["interval"], 30)
+        self.hub.publisher = self.publish
+        await self.hub.set_mqtt_state(True)
+        self.assertEqual(self.sent[-1][1], {"battery": False, "interval": 30})
+        result = await self.edit(battery=True)
+        self.assertEqual(result["node"]["interval"], 300)
+
+    async def test_battery_disable_preserves_explicit_interval_and_same_mode_edits(self):
+        await self.info(battery=True, interval=300)
+        result = await self.edit(battery=False, interval=60)
+        self.assertEqual(result["node"]["interval"], 60)
+        result = await self.edit(battery=False)
+        self.assertEqual(result["node"]["interval"], 60)
+
+    async def test_battery_mode_requires_capable_firmware(self):
+        self.assertIsNone(self.hub.view(self.db.node("test"))["battery"])
+        response = await self.client.patch("/api/nodes/test", json={"battery": True})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.db.desired_config("test"), {})
+        await self.info(battery="false")
+        self.assertIsNone(self.db.node("test")["battery"])
+
+    async def test_sleeping_is_healthy_until_reports_are_overdue(self):
+        await self.info(battery=True, interval=300)
+        await self.hub.handle_state("test", {"t": 21}, now=1000)
+        await self.hub.handle_status("test", "sleeping")
+        with patch("app.hub.time.time", return_value=1400):
+            view = self.hub.view(self.db.node("test"))
+            self.assertTrue(view["online"])
+            self.assertTrue(view["sleeping"])
+        with patch("app.hub.time.time", return_value=2000):
+            # Retained sleeping status must not refresh last_seen after a restart.
+            restarted = Hub(self.db, "home/murmur")
+            await restarted.handle_status("test", "sleeping")
+            view = restarted.view(self.db.node("test"))
+            self.assertFalse(view["online"])
+            self.assertFalse(view["sleeping"])
+            self.assertEqual(view["last_seen"], 1000)
+        await self.hub.handle_status("test", "offline")
+        self.assertFalse(self.hub.is_online(self.db.node("test"), self.db.settings(), now=1400))
+
+    async def test_queued_interval_change_does_not_expire_sleeping_node_early(self):
+        await self.info(battery=True, interval=900)
+        await self.hub.handle_state("test", {"t": 21}, now=1000)
+        await self.hub.handle_status("test", "sleeping")
+        await self.edit(interval=30, battery=False)
+        node = self.db.node("test")
+        self.assertEqual(node["reported_interval"], 900)
+        self.assertTrue(self.hub.is_online(node, self.db.settings(), now=2000))
+        await self.info(battery=False, interval=30)
+        await self.hub.handle_state("test", {"t": 22}, now=2000)
+        self.assertFalse(self.hub.is_online(self.db.node("test"), self.db.settings(), now=2200))
+
+    async def test_sleeping_commands_rejected_but_config_queued(self):
+        self.hub.publisher = self.publish
+        await self.info(battery=True, interval=300)
+        await self.hub.handle_status("test", "sleeping")
+        for action in ("identify", "read", "reboot"):
+            response = await self.client.post("/api/nodes/test/command", json={"action": action})
+            self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.sent, [])
+        await self.edit(battery=False)
+        self.assertEqual(self.sent[-1], ("home/murmur/test/config", {"battery": False, "interval": 30}, True))
+        await self.hub.handle_status("test", "online")
+        response = await self.client.post("/api/nodes/test/command", json={"action": "read"})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(self.sent[-1][2])
+
     def test_base_topic_validation_and_normalization(self):
         self.assertEqual(Hub(self.db, " /home/murmur/ ").base, "home/murmur")
         for base in ("", "/", "home/+", "home/#", "home/\x00"):
@@ -206,11 +303,15 @@ class ConfigProtocolTests(unittest.IsolatedAsyncioTestCase):
         old.create_node("legacy", "Bedroom", 100)
         old.add_reading("legacy", 100, 21, 40, None)
         old._conn.execute("DROP TABLE node_config")
+        old._conn.execute("ALTER TABLE nodes DROP COLUMN battery")
+        old._conn.execute("ALTER TABLE nodes DROP COLUMN reported_interval")
         old._conn.close()
         upgraded = Database(path)
         self.addCleanup(upgraded._conn.close)
         self.assertEqual(upgraded.node("legacy")["name"], "Bedroom")
         self.assertEqual(upgraded.stats("legacy", 0)["count"], 1)
+        self.assertIsNone(upgraded.node("legacy")["battery"])
+        self.assertIsNone(upgraded.node("legacy")["reported_interval"])
         upgraded.patch_node("legacy", interval=60)
         self.assertEqual(upgraded.desired_config("legacy"), {"interval": 60})
 

@@ -38,8 +38,10 @@ class Hub:
 
     # -- views ------------------------------------------------------------
     def offline_threshold(self, node: dict, settings: dict) -> float:
-        interval = node.get("interval") or 30
-        return max(float(settings["offline_after"]), interval * 3 + 15)
+        # A queued interval change must not make a sleeping node overdue early.
+        interval = max(node.get("interval") or 30, node.get("reported_interval") or 0)
+        grace = 75 if node.get("battery") or node.get("status") == "sleeping" else 15
+        return max(float(settings["offline_after"]), interval * 3 + grace)
 
     def is_online(self, node: dict, settings: dict, now: float | None = None) -> bool:
         now = now or time.time()
@@ -60,6 +62,8 @@ class Hub:
             "model": node["model"],
             "interval": node["interval"],
             "led": bool(node["led"]),
+            "battery": None if node["battery"] is None else bool(node["battery"]),
+            "sleeping": node["status"] == "sleeping" and self.is_online(node, settings),
             "rssi": node["rssi"],
             "uptime": node["uptime"],
             "error": node["error"],
@@ -190,9 +194,9 @@ class Hub:
         await self.broadcast({"type": "reading", "node": v})
 
     async def handle_status(self, node_id: str, text: str) -> None:
-        if text.lower() not in ("online", "offline"):
+        if text.lower() not in ("online", "offline", "sleeping"):
             return
-        status = "online" if text.lower() == "online" else "offline"
+        status = text.lower()
         now = time.time()
         self._ensure_node(node_id, None, now)
         # last_seen only moves on real data: a retained "online" from a node that
@@ -217,8 +221,11 @@ class Hub:
         interval = _int(data.get("interval"))
         if interval is not None and INTERVAL_MIN <= interval <= INTERVAL_MAX:
             fields["interval"] = interval
+            fields["reported_interval"] = interval
         if isinstance(data.get("led"), bool):
             fields["led"] = 1 if data["led"] else 0
+        if isinstance(data.get("battery"), bool):
+            fields["battery"] = 1 if data["battery"] else 0
         self.db.update_node(node_id, **{k: v for k, v in fields.items() if v is not None and k not in desired})
         if desired and any(data.get(k) != v for k, v in desired.items()):
             await self.push_config(node_id)

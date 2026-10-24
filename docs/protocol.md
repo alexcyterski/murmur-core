@@ -8,9 +8,9 @@ use to talk to each other. Any device that follows them shows up on the dashboar
 | Topic | Direction | Retained | Payload |
 |---|---|:-:|---|
 | `<base>/<id>/state` | node → core | | `{"t":21.42,"h":44.10,"p":1012.61,"rssi":-58,"up":3600,"heap":181234}` |
-| `<base>/<id>/status` | node → core | ✓ | `online` / `offline` (also the MQTT last will) |
-| `<base>/<id>/info` | node → core | ✓ | `{"name","sensor","fw","model","ip","mac","ssid","interval","led"}` |
-| `<base>/<id>/config` | core → node | ✓ | `{"interval":30,"led":true,"name":"Bedroom"}` |
+| `<base>/<id>/status` | node → core | ✓ | `online` / `sleeping` / `offline` (last will is `offline`) |
+| `<base>/<id>/info` | node → core | ✓ | `{"name","sensor","fw","model","ip","mac","ssid","interval","led","battery"}` |
+| `<base>/<id>/config` | core → node | ✓ | `{"interval":300,"led":true,"name":"Bedroom","battery":true}` |
 | `<base>/<id>/cmd` | core → node | | `{"action":"identify" \| "read" \| "reboot"}` |
 
 - **State fields:**
@@ -25,7 +25,13 @@ use to talk to each other. Any device that follows them shows up on the dashboar
   - `name` is at most 48 Unicode characters (UTF-8 on the wire); firmware truncates longer names at a character boundary. Older firmware may still truncate names to 32 bytes.
   - `interval` is in seconds, from 2 to 3600.
   - `led` is a JSON boolean.
+  - `battery` is a JSON boolean, default `false`. Firmware supporting battery mode always includes this field in `info`, even when disabled. Core leaves the control unavailable for nodes that have not advertised it.
   - A successful API `pushed` result means the broker accepted the config, not that the node has already applied it. Command success likewise confirms publication, not execution.
+- **Battery mode:**
+  - The node wakes, receives retained config, reports, publishes retained `sleeping`, then gracefully disconnects and deep-sleeps for `interval` seconds. Wake/connect time adds to report spacing. Automatic failed wake cycles return to sleep; the failure retry delay is at least 300 seconds.
+  - `sleeping` describes intentional unavailability, not a fault. Core's `online` API field continues to indicate fresh reports; `sleeping` is true only while that freshness check passes. Neither retained `sleeping` nor retained `online` refreshes `last_seen`.
+  - Core uses the larger of desired and last reported intervals for freshness, so a queued interval reduction does not mark the node overdue prematurely. Battery/sleeping nodes receive 75 seconds of wake overhead in addition to the usual three-interval allowance, or the configured `offline_after`, whichever is longer.
+  - Commands stay non-retained; core rejects them with HTTP 409 while the last reported status is `sleeping`. Configuration remains retained and applies at a later wake. Pressing RESET opens a five-minute awake maintenance window; BOOT extends it while awake.
 - **Forgetting a node:** core deletes the node's history and clears its retained `config`, `info` and `status` topics.
   A node that is still powered will register again the next time it reports.
 

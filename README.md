@@ -33,8 +33,9 @@ Run `docker compose down -v` afterwards to clear the demo data.
 - **Live dashboard**: readings arrive over a WebSocket. Each node card has a sparkline, dew point and Wi-Fi signal.
 - **History**: charts from 1 hour to 90 days, min/avg/max stats, and CSV export.
 - **Node control**:
-  - Changes made on the dashboard are pushed to the node over MQTT: report interval, status LED and name.
+  - Changes made on the dashboard are pushed to the node over MQTT: report interval, status LED, name and battery mode.
   - You can also ask a node to *identify* itself (blink its LED), read now, or reboot.
+- **Battery mode**: compatible nodes sleep between reports and appear as *Sleeping* while healthy. Configuration waits for their next wake; press RESET on the node for a five-minute command/OTA window. Enabling battery mode defaults to at least a five-minute interval; disabling it restores 30 seconds.
 - **Per-node settings**: calibration offsets and high/low alert thresholds.
 - **Preferences**: units (°C/°F, hPa/inHg/mmHg/kPa), dark/light theme, accent colour, how long to keep history, how often to store points, and when a node counts as offline.
 - **API**: REST endpoints with interactive docs at `/api/docs`.
@@ -66,5 +67,3 @@ In a Python virtual environment:
 pip install -r requirements-dev.txt
 python -m unittest discover -s tests -v
 ```
-
-The tests cover offline configuration edits, restart/reconnect recovery, stale node reports, and the MQTT topic and payload contract.
