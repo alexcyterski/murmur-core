@@ -98,7 +98,7 @@ const tipTime = (ts) => new Date(ts * 1000).toLocaleString([], { weekday: 'short
 
 function greeting() {
   const h = new Date().getHours();
-  return h < 5 ? 'Good night' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+  return h < 5 ? 'Still up?' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
 }
 
 function signal(rssi) {
@@ -283,15 +283,13 @@ function heroHtml(nodes) {
   const temps = live.map((n) => n.last.t);
   const hums = live.map((n) => n.last.h).filter((v) => v != null);
   const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
-  const tAvg = avg(temps);
   const hAvg = avg(hums);
   const lo = temps.length ? Math.min(...temps) : null, hi = temps.length ? Math.max(...temps) : null;
-  const unit = U.tUnit();
   return `
     <div>
-      <div class="eyebrow">${greeting()}</div>
-      <div class="big"><span>${num(U.t(tAvg))}</span><span class="unit">${unit}</span></div>
-      <div class="caption">Average across ${live.length} reporting node${live.length === 1 ? '' : 's'}</div>
+      <div class="eyebrow">${new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}</div>
+      <div class="big">${greeting()}</div>
+      <div class="caption">${!nodes.length ? 'No nodes yet' : live.length === nodes.length ? `All ${nodes.length} node${nodes.length === 1 ? ' is' : 's are'} reporting` : `${live.length} of ${nodes.length} nodes reporting`}</div>
     </div>
     <div class="summary">
       <div><div class="k">Healthy</div><div class="v">${nodes.filter((n) => n.online).length}<small>/ ${nodes.length}</small></div></div>
