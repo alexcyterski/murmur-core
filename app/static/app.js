@@ -310,8 +310,8 @@ function cardHtml(n) {
   <a class="card node-card ${n.online ? '' : 'stale'} ${alerts.length ? 'alert' : ''}" href="#/node/${encodeURIComponent(n.id)}" data-id="${esc(n.id)}">
     <div class="top">
       <div>
-        <div class="name">${esc(n.name)}</div>
-        <div class="loc">${esc(n.location || n.id)}</div>
+        <div class="name">${esc(n.location || n.name)}</div>
+        <div class="loc">${esc(n.location ? n.name : n.id)}</div>
       </div>
       ${alerts.length
         ? `<span class="chip warn">${ICON.alert}${esc(alerts[0].text)}</span>`
@@ -431,7 +431,7 @@ function nodeHtml(n) {
   <header class="node-head">
     <div>
       <div class="eyebrow">${id}</div>
-      <h1 id="n-name">${esc(n.name)}</h1>
+      <h1 id="n-name">${esc(n.location || n.name)}</h1>
       <div class="sub" id="n-sub"></div>
     </div>
     <div class="head-actions">
@@ -580,10 +580,9 @@ function updateNodeLive() {
   const dew = dewPoint(t, h);
   const sig = signal(n.rssi);
 
-  $('#n-name').textContent = n.name;
+  $('#n-name').textContent = n.location || n.name;
   $('#n-sub').innerHTML = `
     <i class="dot ${n.online ? 'on' : 'off'}"></i><span>${n.sleeping ? 'Sleeping' : n.online ? 'Online' : 'Offline'}</span>
-    ${n.location ? `<span class="sep">·</span><span>${esc(n.location)}</span>` : ''}
     <span class="sep">·</span><span>Updated <span id="n-seen">${ago(n.last_seen)}</span></span>
     ${n.error ? `<span class="chip crit">${ICON.alert}Sensor: ${esc(n.error)}</span>` : ''}
     ${alertsFor(n).map((a) => `<span class="chip warn">${ICON[a.dir]}${esc(a.text)}</span>`).join('')}`;

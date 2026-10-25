@@ -208,7 +208,7 @@ h1, h2, h3 { margin: 0; font-weight: 500; letter-spacing: -0.01em; }
 .node-card:active { transform: scale(.995); }
 .node-card.stale { opacity: .62; }
 .node-card .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
-.node-card .name { font-size: 16px; font-weight: 500; }
+.node-card .name { font-size: 18px; font-weight: 500; }
 .node-card .loc { font-size: 13px; color: var(--text-3); margin-top: 1px; }
 .node-card .seen { display: flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 11px; color: var(--text-3); white-space: nowrap; }
 .node-card .temp {
