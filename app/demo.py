@@ -9,11 +9,11 @@ import time
 from .hub import Hub
 
 DEMO_NODES = [
-    # id, name, location, sensor, base temp, base humidity, has pressure
-    ("murmur-3fa21c", "Living Room", "Main floor", "aht20+bmp280", 21.8, 44.0, True),
-    ("murmur-8b0e47", "Bedroom", "Upstairs", "dht22", 19.6, 51.0, False),
-    ("murmur-c41d90", "Garage", "Detached", "bme280", 12.4, 63.0, True),
-    ("murmur-e7720a", "Greenhouse", "Backyard", "dht11", 26.5, 72.0, False),
+    # id (also the default node name, like real firmware), location, sensor, base temp, base humidity, has pressure
+    ("murmur-3fa21c", "Living Room", "aht20+bmp280", 21.8, 44.0, True),
+    ("murmur-8b0e47", "Bedroom", "dht22", 19.6, 51.0, False),
+    ("murmur-c41d90", "Garage", "bme280", 12.4, 63.0, True),
+    ("murmur-e7720a", "Greenhouse", "dht11", 26.5, 72.0, False),
 ]
 
 
@@ -32,9 +32,9 @@ async def run_demo(hub: Hub, interval: int = 5) -> None:
     now = time.time()
     if not db.nodes():
         rows = []
-        for i, (nid, name, loc, sensor, bt, bh, hp) in enumerate(DEMO_NODES):
-            db.create_node(nid, name, now - 30 * 86400)
-            db.update_node(nid, location=loc, sensor=sensor, fw="1.0.0", model="ESP32-C3",
+        for i, (nid, loc, sensor, bt, bh, hp) in enumerate(DEMO_NODES):
+            db.create_node(nid, nid, now - 30 * 86400)
+            db.update_node(nid, location=loc, sensor=sensor, fw="1.1.0", model="ESP32-C3",
                            ip=f"192.168.1.{40 + i}", mac=f"A0:76:4E:{nid[-6:-4]}:{nid[-4:-2]}:{nid[-2:]}".upper(),
                            interval=interval, status="online")
             ts = int(now - 30 * 86400)
@@ -49,7 +49,7 @@ async def run_demo(hub: Hub, interval: int = 5) -> None:
 
     up0 = time.monotonic()
     while True:
-        for i, (nid, _n, _l, _s, bt, bh, hp) in enumerate(DEMO_NODES):
+        for i, (nid, _l, _s, bt, bh, hp) in enumerate(DEMO_NODES):
             if db.node(nid) is None:
                 continue
             data = _sample(bt, bh, hp, time.time(), i)
