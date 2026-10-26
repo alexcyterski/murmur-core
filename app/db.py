@@ -38,7 +38,9 @@ CREATE TABLE IF NOT EXISTS nodes (
     last_h      REAL,
     last_p      REAL,
     last_ts     REAL,
-    last_stored INTEGER
+    last_stored INTEGER,
+    n_reports   INTEGER NOT NULL DEFAULT 0,
+    n_ignored   INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS readings (
     node_id TEXT    NOT NULL,
@@ -75,6 +77,7 @@ NODE_COLUMNS = {
     "name", "location", "sensor", "fw", "ip", "mac", "model", "interval", "led", "battery", "reported_interval", "rssi",
     "uptime", "status", "error", "first_seen", "last_seen", "t_off", "h_off", "p_off",
     "t_min", "t_max", "h_min", "h_max", "last_t", "last_h", "last_p", "last_ts", "last_stored",
+    "n_reports", "n_ignored",
 }
 
 
@@ -93,6 +96,9 @@ class Database:
             for column in ("battery", "reported_interval"):
                 if column not in columns:
                     self._conn.execute(f"ALTER TABLE nodes ADD COLUMN {column} INTEGER")
+            for column in ("n_reports", "n_ignored"):
+                if column not in columns:
+                    self._conn.execute(f"ALTER TABLE nodes ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
 
     # -- primitives -------------------------------------------------------
     def _all(self, sql: str, args=()) -> list[sqlite3.Row]:

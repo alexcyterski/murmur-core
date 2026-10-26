@@ -315,6 +315,62 @@ class ConfigProtocolTests(unittest.IsolatedAsyncioTestCase):
         upgraded.patch_node("legacy", interval=60)
         self.assertEqual(upgraded.desired_config("legacy"), {"interval": 60})
 
+    async def test_spike_is_ignored_and_previous_value_kept(self):
+        await self.hub.handle_state("test", {"t": 20.0, "h": 40}, now=1000)
+        await self.hub.handle_state("test", {"t": 5.0, "h": 41}, now=1030)
+        node = self.db.node("test")
+        self.assertEqual((node["last_t"], node["last_h"]), (20.0, 41.0))
+        self.assertEqual(self.db.stats("test", 0)["count"], 2)
+        self.assertEqual([r["t"] for r in self.db._all("SELECT t FROM readings ORDER BY ts")], [20.0, None])
+        await self.hub.handle_state("test", {"t": 20.5, "h": 41}, now=1060)
+        self.assertEqual(self.db.node("test")["last_t"], 20.5)
+
+    async def test_spike_only_report_is_not_stored(self):
+        await self.hub.handle_state("test", {"t": 20.0}, now=1000)
+        await self.hub.handle_state("test", {"t": 5.0}, now=1030)
+        node = self.db.node("test")
+        self.assertEqual((node["last_t"], node["last_ts"], node["last_seen"]), (20.0, 1000, 1030))
+        self.assertEqual(self.db.stats("test", 0)["count"], 1)
+
+    async def test_sustained_change_is_accepted_on_second_reading(self):
+        await self.hub.handle_state("test", {"t": 20.0}, now=1000)
+        await self.hub.handle_state("test", {"t": 5.0}, now=1030)
+        self.assertEqual(self.db.node("test")["last_t"], 20.0)
+        await self.hub.handle_state("test", {"t": 5.2}, now=1060)
+        self.assertEqual(self.db.node("test")["last_t"], 5.2)
+
+    async def test_ignored_readings_are_counted_per_node(self):
+        await self.hub.handle_state("test", {"t": 20.0}, now=1000)
+        await self.hub.handle_state("test", {"t": 5.0}, now=1030)
+        await self.hub.handle_state("test", {"t": 20.2}, now=1060)
+        await self.hub.handle_state("test", {}, now=1090)
+        self.assertEqual(self.hub.view(self.db.node("test"))["reports"], {"total": 3, "ignored": 1})
+
+    async def test_slow_node_missing_one_report_still_filters_spikes(self):
+        await self.info(battery=True, interval=600)
+        await self.hub.handle_state("test", {"t": 20.0}, now=1000)
+        await self.hub.handle_state("test", {"t": 5.0}, now=1000 + 1300)
+        self.assertEqual(self.db.node("test")["last_t"], 20.0)
+
+    async def test_missing_reading_does_not_disable_spike_filter(self):
+        await self.hub.handle_state("test", {"t": 20.0, "h": 40}, now=1000)
+        await self.hub.handle_state("test", {"h": 40}, now=1030)  # failed temperature read
+        self.assertIsNone(self.db.node("test")["last_t"])
+        await self.hub.handle_state("test", {"t": 5.0, "h": 40}, now=1060)
+        self.assertIsNone(self.db.node("test")["last_t"])
+        self.assertEqual(self.db.stats("test", 0)["t"]["min"], 20.0)
+
+    async def test_filter_baseline_survives_restart(self):
+        await self.hub.handle_state("test", {"t": 20.0}, now=1000)
+        restarted = Hub(self.db, "home/murmur")
+        await restarted.handle_state("test", {"t": 5.0}, now=1030)
+        self.assertEqual(self.db.node("test")["last_t"], 20.0)
+
+    async def test_stale_previous_reading_does_not_trigger_spike_filter(self):
+        await self.hub.handle_state("test", {"t": 20.0}, now=1000)
+        await self.hub.handle_state("test", {"t": 5.0}, now=1000 + 91)
+        self.assertEqual(self.db.node("test")["last_t"], 5.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -650,12 +650,19 @@ function updateNodeLive() {
     ['IP address', n.ip || '—'],
     ['MAC', n.mac || '—'],
     ['Uptime', duration(n.uptime)],
+    ['Ignored readings', ignoredLabel(n.reports)],
     ['First seen', dateTime(n.first_seen)],
   ].map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('');
 
   $('#metric-seg [data-metric="p"]').disabled = p == null && !(page.hist?.stats.p.avg != null);
   if (page.metric === 'p' && $('#metric-seg [data-metric="p"]').disabled) page.metric = 't';
   $$('#metric-seg button').forEach((b) => b.classList.toggle('on', b.dataset.metric === page.metric));
+}
+
+function ignoredLabel(r) {
+  if (!r || !r.total) return '—';
+  const pct = (r.ignored / r.total) * 100;
+  return `${r.ignored.toLocaleString()} of ${r.total.toLocaleString()} (${pct < 10 ? pct.toFixed(2) : pct.toFixed(1)}%)`;
 }
 
 function setIntervalLabel() {

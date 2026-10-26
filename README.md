@@ -36,6 +36,7 @@ Run `docker compose down -v` afterwards to clear the demo data.
   - Changes made on the dashboard are pushed to the node over MQTT: report interval, status LED, name and battery mode.
   - You can also ask a node to *identify* itself (blink its LED), read now, or reboot.
 - **Battery mode**: compatible nodes sleep between reports and appear as *Sleeping* while healthy. Configuration waits for their next wake; press RESET on the node for a five-minute command/OTA window. Enabling battery mode defaults to at least a five-minute interval; disabling it restores 30 seconds.
+- **Glitch filtering**: a reading that jumps implausibly far from the node's previous one (10 °C, 25 % RH or 20 hPa) is ignored. A second reading that agrees with it is accepted, so real changes still come through.
 - **Per-node settings**: calibration offsets and high/low alert thresholds.
 - **Preferences**: units (°C/°F, hPa/inHg/mmHg/kPa), dark/light theme, accent colour, how long to keep history, how often to store points, and when a node counts as offline.
 - **API**: REST endpoints with interactive docs at `/api/docs`.

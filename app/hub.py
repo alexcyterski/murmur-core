@@ -21,6 +21,11 @@ INTERVAL_MIN, INTERVAL_MAX = 2, 3600
 # Plausibility windows - anything outside is treated as a sensor glitch and dropped.
 LIMITS = {"t": (-60.0, 125.0), "h": (0.0, 100.0), "p": (300.0, 1200.0)}
 
+# A reading further than this from the node's previous one is ignored as a spike (e.g. a DHT22 returning
+# 41 °F between 67 and 69). Skipped if the previous reading is older than 3 report intervals, and a second
+# reading that agrees with the ignored one is accepted so a genuine step change can't lock a node out.
+MAX_JUMP = {"t": 10.0, "h": 25.0, "p": 20.0}
+
 Publisher = Callable[[str, str, bool], Awaitable[None]]
 
 
@@ -34,6 +39,10 @@ class Hub:
         self.publisher: Publisher | None = None
         self.mqtt_connected = False
         self._online_cache: dict[str, bool] = {}
+        # Spike filter state per (node, channel): last accepted value with its time, and an ignored value awaiting
+        # confirmation. Kept apart from the node row so a report that omits a channel doesn't erase the baseline.
+        self._last_good: dict[tuple[str, str], tuple[float, float]] = {}
+        self._suspect: dict[tuple[str, str], float] = {}
         self._config_lock = asyncio.Lock()
 
     # -- views ------------------------------------------------------------
@@ -75,6 +84,7 @@ class Hub:
                 "t_min": node["t_min"], "t_max": node["t_max"],
                 "h_min": node["h_min"], "h_max": node["h_max"],
             },
+            "reports": {"total": node["n_reports"], "ignored": node["n_ignored"]},
             "last": {
                 "t": node["last_t"], "h": node["last_h"], "p": node["last_p"], "ts": node["last_ts"],
             },
@@ -159,6 +169,7 @@ class Hub:
         settings = self.db.settings()
 
         vals = {}
+        ignored = set()
         for key, off in (("t", node["t_off"]), ("h", node["h_off"]), ("p", node["p_off"])):
             v = _num(data.get(key))
             lo, hi = LIMITS[key]
@@ -166,7 +177,11 @@ class Hub:
                 v = v + (off or 0)
                 if key == "h":
                     v = min(100.0, max(0.0, v))
-                vals[key] = round(v, 2)
+                v = round(v, 2)
+                if self._is_spike(node, key, v, now):
+                    ignored.add(key)
+                    v = None
+                vals[key] = v
             else:
                 vals[key] = None
 
@@ -178,8 +193,14 @@ class Hub:
             "uptime": _int(data.get("up")),
             "error": str(data["err"])[:64] if data.get("err") else None,
         }
+        if has_data or ignored:
+            update["n_reports"] = node["n_reports"] + 1
+            if ignored:
+                update["n_ignored"] = node["n_ignored"] + 1
         if has_data:
-            update.update(last_t=vals["t"], last_h=vals["h"], last_p=vals["p"], last_ts=now)
+            # An ignored channel keeps its previous value on the node card.
+            shown = {k: node[f"last_{k}"] if k in ignored else vals[k] for k in vals}
+            update.update(last_t=shown["t"], last_h=shown["h"], last_p=shown["p"], last_ts=now)
             ts = int(now)
             resolution = int(settings["resolution"] or 0)
             last_stored = node["last_stored"] or 0
@@ -192,6 +213,25 @@ class Hub:
         v = self.view(node, settings)
         self._online_cache[node_id] = v["online"]
         await self.broadcast({"type": "reading", "node": v})
+
+    def _is_spike(self, node: dict, key: str, value: float, now: float) -> bool:
+        slot = (node["id"], key)
+        base = self._last_good.get(slot)
+        if base is None and node[f"last_{key}"] is not None and node["last_ts"]:
+            base = (node[f"last_{key}"], node["last_ts"])  # after a restart
+        # Three intervals, so a missed wake of a slow node doesn't disable the check.
+        interval = max(node["interval"] or 30, node["reported_interval"] or 0)
+        if base is not None and now - base[1] <= 3 * interval:
+            limit = MAX_JUMP[key]
+            if abs(value - base[0]) > limit:
+                earlier = self._suspect.get(slot)
+                if earlier is None or abs(value - earlier) > limit:  # else two readings agree: the change is real
+                    self._suspect[slot] = value
+                    log.info("%s: ignoring %s=%s (previous %s)", node["id"], key, value, base[0])
+                    return True
+        self._suspect.pop(slot, None)
+        self._last_good[slot] = (value, now)
+        return False
 
     async def handle_status(self, node_id: str, text: str) -> None:
         if text.lower() not in ("online", "offline", "sleeping"):
@@ -259,6 +299,9 @@ class Hub:
                 await self.publish(f"{self.base}/{node_id}/{kind}", "", retain=True)
             self.db.delete_node(node_id)
         self._online_cache.pop(node_id, None)
+        for key in MAX_JUMP:
+            self._suspect.pop((node_id, key), None)
+            self._last_good.pop((node_id, key), None)
         await self.broadcast({"type": "removed", "id": node_id})
 
     # -- background loops -------------------------------------------------
